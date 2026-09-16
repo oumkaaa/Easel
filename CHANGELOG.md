@@ -2,6 +2,14 @@
 
 All notable changes to Easel are documented in this file.
 
+## [Unreleased] (fork: oumkaaa/Easel)
+
+本 fork 在上游基础上的本地变更记录，每次改动随对应 PR 一并更新本节。
+
+### Added
+
+- 技能库面板执行结果自动落盘归档到 `outputs/技能执行记录/<skill>/<timestamp>.md`，内容库可见、可追溯，不再因关闭面板/刷新页面丢失。(#1)
+
 ## [0.1.1] - 2026-09-15
 
 ### Added
