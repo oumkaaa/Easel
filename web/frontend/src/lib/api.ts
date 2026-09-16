@@ -120,6 +120,7 @@ export interface OutputContent {
 
 export interface SkillResponse {
   response: string;
+  savedTo?: string;
 }
 
 export interface ProfileBuildResponse {
