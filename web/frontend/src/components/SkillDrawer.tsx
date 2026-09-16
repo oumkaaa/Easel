@@ -22,6 +22,7 @@ export default function SkillDrawer({ skillName, persona, onClose, onConfigured 
   // 执行区
   const [input, setInput] = useState('');
   const [result, setResult] = useState('');
+  const [savedTo, setSavedTo] = useState('');
   const [running, setRunning] = useState(false);
   const [runErr, setRunErr] = useState('');
   const reqSeq = useRef(0);
@@ -68,9 +69,13 @@ export default function SkillDrawer({ skillName, persona, onClose, onConfigured 
     setRunning(true);
     setRunErr('');
     setResult('');
+    setSavedTo('');
     try {
       const res = await executeSkill(skillName, input.trim(), persona || undefined);
-      if (seq === reqSeq.current) setResult(res.response);
+      if (seq === reqSeq.current) {
+        setResult(res.response);
+        setSavedTo(res.savedTo || '');
+      }
     } catch (e) {
       if (seq === reqSeq.current) setRunErr(e instanceof Error ? e.message : '执行失败');
     } finally {
@@ -216,6 +221,11 @@ export default function SkillDrawer({ skillName, persona, onClose, onConfigured 
             {runErr && <div style={{ color: 'var(--red)', fontSize: 13, marginTop: 10 }}>{runErr}</div>}
             {resultHtml && (
               <div className="skill-result" dangerouslySetInnerHTML={{ __html: resultHtml }} />
+            )}
+            {savedTo && (
+              <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 8 }}>
+                已存档 → 内容库 / {savedTo}（刷新即可看到，关闭本面板不会丢）
+              </div>
             )}
           </div>
 

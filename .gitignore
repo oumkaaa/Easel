@@ -1,5 +1,7 @@
 # Dependencies
 node_modules/
+.venv/
+.pybin/
 __pycache__/
 *.pyc
 *.pyo

@@ -20,6 +20,7 @@ import urllib.error
 import urllib.request
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
@@ -1749,6 +1750,35 @@ class SkillRequest(BaseModel):
     persona: str | None = None
 
 
+SKILL_RUNS_DIR_NAME = "技能执行记录"
+
+
+def _save_skill_run(skill: str, input_text: str, persona: str | None, result: str) -> str:
+    """技能库面板直接执行的结果只活在前端内存里，关闭/刷新即丢——这里落盘到
+    outputs/ 下固定项目目录，让内容库也能看到、以后能翻。返回相对 outputs/ 的路径。"""
+    safe_skill = re.sub(r"[\\/]+", "-", skill).strip() or "unknown-skill"
+    folder = OUTPUTS_DIR / SKILL_RUNS_DIR_NAME / safe_skill
+    folder.mkdir(parents=True, exist_ok=True)
+    now = datetime.now()
+    fname = f"{now.strftime('%Y%m%d-%H%M%S')}.md"
+    doc = (
+        f"# {skill} 执行记录\n\n"
+        f"- 时间：{now.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"- 画像：{persona or '通用模式'}\n\n"
+        f"## 输入\n\n{input_text}\n\n"
+        f"## 输出\n\n{result}\n"
+    )
+    (folder / fname).write_text(doc, encoding="utf-8")
+    project_meta = OUTPUTS_DIR / SKILL_RUNS_DIR_NAME / ".easel.json"
+    if not project_meta.is_file():
+        project_meta.write_text(
+            json.dumps({"title": "技能执行记录", "summary": "技能库面板每次执行的结果自动存档"},
+                       ensure_ascii=False),
+            encoding="utf-8",
+        )
+    return str((folder / fname).relative_to(OUTPUTS_DIR))
+
+
 @app.post("/api/skill")
 async def api_skill(req: SkillRequest):
     skill_full = find_skill(req.skill)
@@ -1759,7 +1789,8 @@ async def api_skill(req: SkillRequest):
     timeout = TIMEOUT_PRODUCE
     loop = asyncio.get_event_loop()
     result = await loop.run_in_executor(None, run_agent_sync, message, timeout)
-    return {"response": result}
+    saved_to = _save_skill_run(req.skill, req.input, req.persona, result)
+    return {"response": result, "savedTo": saved_to}
 
 
 @app.get("/api/outputs")
