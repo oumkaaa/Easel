@@ -75,10 +75,12 @@ OPENCLAW_WORKSPACE = Path.home() / ".openclaw" / f"workspace-{OPENCLAW_PROFILE}"
 # OpenClaw 会话历史（transcript）目录：<profile 配置目录>/agents/main/sessions/<session-id>.jsonl
 OPENCLAW_SESSIONS_DIR = Path.home() / f".openclaw-{OPENCLAW_PROFILE}" / "agents" / "main" / "sessions"
 
-# 思考档位（每轮 --thinking）。实测：内网 codewiz 网关**不回传** extended-thinking 内容
-# （会话记录 & SSE 流里 thinking 命中恒为 0），故调高只增加延迟/开销、前端思考面板却永远为空。
-# 默认用 low 保证生成速度；仍可用 EASEL_THINKING_LEVEL 覆盖（若将来换了支持思考的网关再调 medium/high）。
-THINKING_LEVEL = (os.environ.get("EASEL_THINKING_LEVEL", "").strip() or "low")
+# 思考档位（每轮 --thinking）。前后端已完整支持展示思考：后端把 thinking_delta 转成 SSE
+# `thinking` 事件，前端 MessageBubble 渲染「💭 思考过程」并在流式结束后持久保留。面板里有没有
+# 内容取决于网关——支持 extended-thinking 的网关会按档位回传思考流；不支持的（如内网 codewiz，
+# 实测 transcript 里 assistant 只有 text 块、thinking 恒为 0）面板留空，调高档位也不会有内容。
+# 默认 medium：让支持思考的部署直接显示较完整思考；EASEL_THINKING_LEVEL 可覆盖（low 提速 / high 更详尽）。
+THINKING_LEVEL = (os.environ.get("EASEL_THINKING_LEVEL", "").strip() or "medium")
 
 
 def _heal_openclaw_session(sk: str) -> None:
