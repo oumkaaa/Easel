@@ -9,6 +9,7 @@ All notable changes to Easel are documented in this file.
 ### Added
 
 - 技能库面板执行结果自动落盘归档到 `outputs/技能执行记录/<skill>/<timestamp>.md`，内容库可见、可追溯，不再因关闭面板/刷新页面丢失。(#1)
+- 账号页支持给小红书添加多个独立登录态的子账号，各自扫码、各自持久化浏览器 profile，互不覆盖，可单独删除。(#2)
 
 ## [0.1.1] - 2026-09-15
 
