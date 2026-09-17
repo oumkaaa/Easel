@@ -135,6 +135,85 @@ LOGIN_RUNNERS: dict[str, dict] = {
     "wechat-oa": {"name": "微信公众号", "backend": "wechat-oa"},
 }
 
+# ---- 小红书多账号（同平台隔离登录态）----
+# 一次扫码只能保存一个小红书登录态（覆盖式）：现实中创作者常同时运营多个小红书账号（不同定位/主体）。
+# xhs_publish.py 本身已支持 --profile-base 把持久化浏览器 profile 存到任意目录，这里在 Web 层
+# 给每个"子账号"分配独立的 profile 根目录 + 独立的登录状态文件，并把它们当成普通 platform 卡片
+# 接入既有的登录/校验/退出流程（键名 "xiaohongshu__<id>"），前端逻辑因此几乎不用改。
+XHS_SUBACCOUNTS_FILE = LOGIN_DIR / "xiaohongshu.subaccounts.json"
+XHS_SUBACCOUNTS_ROOT = Path.home() / ".easel-browser-profiles-accounts" / "xiaohongshu"
+XHS_SUB_PREFIX = "xiaohongshu__"
+
+
+def _load_xhs_subaccounts() -> list[dict]:
+    if not XHS_SUBACCOUNTS_FILE.is_file():
+        return []
+    try:
+        data = json.loads(XHS_SUBACCOUNTS_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _save_xhs_subaccounts(items: list[dict]) -> None:
+    XHS_SUBACCOUNTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = XHS_SUBACCOUNTS_FILE.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, XHS_SUBACCOUNTS_FILE)
+
+
+def _slugify(label: str, existing: set[str]) -> str:
+    base = re.sub(r"[^a-zA-Z0-9一-鿿]+", "-", label.strip()).strip("-").lower() or "account"
+    slug = base
+    i = 2
+    while slug in existing:
+        slug = f"{base}-{i}"
+        i += 1
+    return slug
+
+
+def _xhs_subaccount_cfg(acc: dict) -> dict:
+    sub_id = acc["id"]
+    return {
+        "name": f"小红书 · {acc.get('label', sub_id)}",
+        "backend": "xhs",
+        "profile": "XiaohongshuProfile",
+        "profileRoot": str(XHS_SUBACCOUNTS_ROOT / sub_id),
+        "isSubAccount": True,
+        "subId": sub_id,
+    }
+
+
+def _all_login_cfgs() -> dict[str, dict]:
+    """LOGIN_RUNNERS + 动态挂载的小红书子账号，按小红书条目后紧跟其子账号的顺序合并，
+    供 /api/accounts 等需要遍历全部"卡片"的地方使用。"""
+    merged: dict[str, dict] = {}
+    for key, cfg in LOGIN_RUNNERS.items():
+        merged[key] = cfg
+        if key == "xiaohongshu":
+            for acc in _load_xhs_subaccounts():
+                merged[XHS_SUB_PREFIX + acc["id"]] = _xhs_subaccount_cfg(acc)
+    return merged
+
+
+def _base_platform(platform: str) -> str:
+    """子账号 key（xiaohongshu__<id>）→ 基础平台名，供只认基础平台名的集合/校验复用。"""
+    if platform.startswith(XHS_SUB_PREFIX):
+        return "xiaohongshu"
+    return platform
+
+
+def _resolve_login_cfg(platform: str) -> dict | None:
+    cfg = LOGIN_RUNNERS.get(platform)
+    if cfg is not None:
+        return cfg
+    if platform.startswith(XHS_SUB_PREFIX):
+        sub_id = platform[len(XHS_SUB_PREFIX):]
+        for acc in _load_xhs_subaccounts():
+            if acc.get("id") == sub_id:
+                return _xhs_subaccount_cfg(acc)
+    return None
+
 # ---- 微信公众号（wechat-oa）凭证式接入 ----
 # 复用 skill-wechat-publisher 的发布引擎与配置：凭证存在其 wechat-publisher.yaml，
 # 发布/取数脚本都从这里读账号。web 侧统一用账号 key "web"。
@@ -1989,15 +2068,58 @@ async def api_accounts():
         {'platform': pf, 'name': cfg['name'], 'backend': cfg['backend'],
          'supported': cfg['backend'] != 'unsupported',
          'loggedIn': _account_logged_in(pf, cfg),
-         'note': cfg.get('note', '')}
-        for pf, cfg in LOGIN_RUNNERS.items()
+         'note': cfg.get('note', ''),
+         'isSubAccount': cfg.get('isSubAccount', False)}
+        for pf, cfg in _all_login_cfgs().items()
     ]
+
+
+class AddSubAccountRequest(BaseModel):
+    label: str
+
+
+@app.post("/api/accounts/xiaohongshu/subaccounts")
+async def api_add_xhs_subaccount(req: AddSubAccountRequest):
+    """新增一个小红书子账号卡片：独立登录态目录，互不覆盖。"""
+    label = req.label.strip()
+    if not label:
+        raise HTTPException(400, '账号名称不能为空')
+    accs = _load_xhs_subaccounts()
+    if any(a.get('label') == label for a in accs):
+        raise HTTPException(400, f'已存在同名账号"{label}"')
+    sub_id = _slugify(label, {a['id'] for a in accs})
+    accs.append({'id': sub_id, 'label': label, 'ts': int(time.time())})
+    _save_xhs_subaccounts(accs)
+    return {'ok': True, 'platform': XHS_SUB_PREFIX + sub_id, 'id': sub_id, 'label': label}
+
+
+@app.delete("/api/accounts/xiaohongshu/subaccounts/{sub_id}")
+async def api_remove_xhs_subaccount(sub_id: str):
+    """删除一个小红书子账号：连同登录态文件和持久化浏览器 profile 一起清掉。"""
+    accs = _load_xhs_subaccounts()
+    remaining = [a for a in accs if a.get('id') != sub_id]
+    if len(remaining) == len(accs):
+        raise HTTPException(404, '账号不存在')
+    _save_xhs_subaccounts(remaining)
+    platform = XHS_SUB_PREFIX + sub_id
+    for suffix in ('.json', '.png', '-me.png', '.code', '.log'):
+        f = LOGIN_DIR / f'{platform}{suffix}'
+        try:
+            f.unlink()
+        except OSError:
+            pass
+    pdir = (XHS_SUBACCOUNTS_ROOT / sub_id).resolve()
+    if XHS_SUBACCOUNTS_ROOT.resolve() in pdir.parents and pdir.is_dir():
+        shutil.rmtree(pdir, ignore_errors=True)
+    with _WHOAMI_LOCK:
+        _WHOAMI_CACHE.pop(platform, None)
+    return {'ok': True}
 
 
 @app.post("/api/login/{platform}")
 async def api_login_start(platform: str):
     """启动某平台登录：浏览器平台后台跑 QR runner，轮询到二维码就绪即返回。"""
-    cfg = LOGIN_RUNNERS.get(platform)
+    cfg = _resolve_login_cfg(platform)
     if not cfg:
         raise HTTPException(404, '未知平台')
     backend = cfg['backend']
@@ -2018,6 +2140,8 @@ async def api_login_start(platform: str):
     if backend == 'xhs':
         cmd = [sys.executable, str(SHARED_SCRIPTS / 'xhs_publish.py'), 'login', '--no-proxy',
                '--qr-out', str(qr), '--status-file', str(status), '--timeout', str(LOGIN_TIMEOUT)]
+        if cfg.get('profileRoot'):
+            cmd += ['--profile-base', cfg['profileRoot']]
     elif backend == 'biliup':
         # B站：TV 端扫码登录 API 生成二维码 + 写 biliup cookie（biliup login 需真终端，前端用不了）
         cmd = [sys.executable, str(SHARED_SCRIPTS / 'bili_login.py'), 'login',
@@ -2056,7 +2180,7 @@ async def api_login_start(platform: str):
 
 @app.get("/api/login/{platform}/status")
 async def api_login_status(platform: str):
-    if platform not in LOGIN_RUNNERS:
+    if _resolve_login_cfg(platform) is None:
         raise HTTPException(404, '未知平台')
     s = _login_status(platform)
     if s.get('state') == 'success':
@@ -2079,7 +2203,7 @@ async def api_login_sms(platform: str, req: SmsCodeRequest):
     登录 runner 检测到风控短信墙时把状态置 sms_required，前端弹输入框，用户把手机
     收到的验证码提交到这里，runner 读走后填码提交，继续完成登录。
     """
-    if platform not in LOGIN_RUNNERS:
+    if _resolve_login_cfg(platform) is None:
         raise HTTPException(404, '未知平台')
     code = ''.join(ch for ch in (req.code or '') if ch.isdigit())
     if not (4 <= len(code) <= 8):
@@ -2218,7 +2342,7 @@ async def api_mp_login_status(platform: str):
 async def api_account_whoami(platform: str):
     """真校验登录态 + 读昵称/头像（起 headless 浏览器，数秒）。前端开页后台调用以自愈假阳性。
     带 TTL 进程内缓存（避免账号页+工作台重复起浏览器）；确认已登录则回写标记，令快速路径自愈。"""
-    cfg = LOGIN_RUNNERS.get(platform)
+    cfg = _resolve_login_cfg(platform)
     if not cfg:
         raise HTTPException(404, '未知平台')
     backend = cfg['backend']
@@ -2239,6 +2363,8 @@ async def api_account_whoami(platform: str):
                '--cookie', str(PROJECT_ROOT / 'cookies.json')]
     elif backend == 'xhs':
         cmd = [sys.executable, str(SHARED_SCRIPTS / 'xhs_publish.py'), 'whoami', '--no-proxy']
+        if cfg.get('profileRoot'):
+            cmd += ['--profile-base', cfg['profileRoot']]
     elif backend == 'douyin':
         cmd = [sys.executable, str(SHARED_SCRIPTS / 'douyin_publish.py'), 'whoami']
     else:
@@ -2284,7 +2410,7 @@ async def api_account_whoami(platform: str):
 @app.post("/api/logout/{platform}")
 async def api_logout(platform: str):
     """退出登录：删持久化浏览器 profile + 登录状态/二维码/头像文件（biliup 删 cookies.json）。"""
-    cfg = LOGIN_RUNNERS.get(platform)
+    cfg = _resolve_login_cfg(platform)
     if not cfg:
         raise HTTPException(404, '未知平台')
     deleted = []
@@ -2319,8 +2445,9 @@ async def api_logout(platform: str):
         return {'ok': True, 'deleted': deleted}
     prof_name = cfg.get('profile')
     if prof_name:
-        pdir = (BROWSER_PROFILES / prof_name).resolve()
-        if BROWSER_PROFILES.resolve() in pdir.parents and pdir.is_dir():
+        profiles_root = Path(cfg['profileRoot']) if cfg.get('profileRoot') else BROWSER_PROFILES
+        pdir = (profiles_root / prof_name).resolve()
+        if profiles_root.resolve() in pdir.parents and pdir.is_dir():
             shutil.rmtree(pdir, ignore_errors=True)
             deleted.append(prof_name)
     if cfg['backend'] == 'biliup':
@@ -2487,7 +2614,7 @@ def _start_async_publish(platform: str, cmd: list, title: str, body: str, cfg: d
 @app.get("/api/publish/{platform}/status")
 async def api_publish_status(platform: str):
     """轮询异步发布状态：starting/sms_required/verifying/success/error。"""
-    if platform not in LOGIN_RUNNERS:
+    if _resolve_login_cfg(platform) is None:
         raise HTTPException(404, '未知平台')
     return {'mode': 'publish', **_read_publish_status(platform)}
 
@@ -2495,7 +2622,7 @@ async def api_publish_status(platform: str):
 @app.post("/api/publish/{platform}/sms")
 async def api_publish_sms(platform: str, req: SmsCodeRequest):
     """发布触发短信墙时回填验证码（写发布 runner 轮询的一次性验证码文件）。"""
-    if platform not in LOGIN_RUNNERS:
+    if _resolve_login_cfg(platform) is None:
         raise HTTPException(404, '未知平台')
     code = ''.join(ch for ch in (req.code or '') if ch.isdigit())
     if not (4 <= len(code) <= 8):
@@ -2508,7 +2635,7 @@ async def api_publish_sms(platform: str, req: SmsCodeRequest):
 @app.post("/api/publish/{platform}")
 async def api_publish(platform: str, req: PublishRequest):
     """一键发布：分发到对应 publisher 脚本真发（--exec）。二次确认在前端。"""
-    cfg = LOGIN_RUNNERS.get(platform)
+    cfg = _resolve_login_cfg(platform)
     if not cfg:
         raise HTTPException(404, '未知平台')
     backend = cfg['backend']
@@ -2524,19 +2651,22 @@ async def api_publish(platform: str, req: PublishRequest):
             vids.append(str(full))
         elif ext in IMAGE_EXTS:
             imgs.append(str(full))
-    if platform in MEDIA_REQUIRED and not imgs and not vids:
+    base_platform = _base_platform(platform)
+    if base_platform in MEDIA_REQUIRED and not imgs and not vids:
         raise HTTPException(400, f"{cfg['name']} 需附带图片或视频")
     if imgs and vids:
         raise HTTPException(400, '同一条内容不能同时发图片和视频，请二选一')
-    if platform in VIDEO_ONLY_PUBLISH and not vids:
+    if base_platform in VIDEO_ONLY_PUBLISH and not vids:
         raise HTTPException(400, f"{cfg['name']} 只能发视频，请附带一个视频文件")
     title = req.title.strip() or req.body.strip()[:20]
     tags = req.tags or ''
     py = sys.executable
-    if platform == 'xiaohongshu':
+    if backend == 'xhs':
         base = [py, str(SHARED_SCRIPTS / 'xhs_publish.py')]
         cmd = base + ['publish-video', '--no-proxy', '--video', vids[0]] if vids else base + ['publish', '--no-proxy', '--images', ','.join(imgs)]
         cmd += ['--title', title, '--content', req.body, '--tags', tags, '--exec']
+        if cfg.get('profileRoot'):
+            cmd += ['--profile-base', cfg['profileRoot']]
     elif platform == 'bilibili':
         # B站投稿：直接调 biliup CLI（需 cookies.json，PATH 上有 biliup）。必须视频；
         # tid=36「知识」；B站投稿必须≥1 标签，无则兜底「日常」。
