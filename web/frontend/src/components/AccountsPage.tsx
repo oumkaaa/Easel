@@ -3,6 +3,7 @@ import {
   fetchAccounts, startLogin, loginStatus, mediaUrl,
   accountWhoami, logoutAccount, submitLoginSms,
   saveCredentials, getCredentials, startMpLogin, mpLoginStatus,
+  addXhsSubAccount, removeXhsSubAccount,
 } from '../lib/api';
 import type { AccountItem, AccountWhoami } from '../lib/api';
 import { getWhoamiCache, setWhoamiCache, verifyStale } from '../lib/whoami';
@@ -61,6 +62,12 @@ export default function AccountsPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const aliveRef = useRef(true);
   const qrPlatformRef = useRef('');   // 当前登录中的平台，供 submitSms 稳定引用
+  // 小红书多账号：同平台可以建多个互相隔离的登录态（不同主体/定位各扫各的码）
+  const [addingSub, setAddingSub] = useState(false);
+  const [subLabel, setSubLabel] = useState('');
+  const [subBusy, setSubBusy] = useState(false);
+  const [subErr, setSubErr] = useState('');
+  const [removeBusy, setRemoveBusy] = useState('');
 
   useEffect(() => {
     aliveRef.current = true;
@@ -260,6 +267,36 @@ export default function AccountsPage() {
     }
   }, [load]);
 
+  const handleAddSub = useCallback(async () => {
+    const label = subLabel.trim();
+    if (!label) { setSubErr('给账号起个名字，例如"火车票小红书"'); return; }
+    setSubBusy(true); setSubErr('');
+    try {
+      await addXhsSubAccount(label);
+      setSubLabel(''); setAddingSub(false);
+      load();
+    } catch (e) {
+      setSubErr(e instanceof Error ? e.message : '添加失败');
+    } finally {
+      setSubBusy(false);
+    }
+  }, [subLabel, load]);
+
+  const handleRemoveSub = useCallback(async (a: AccountItem) => {
+    if (!window.confirm(`确定删除「${a.name}」这个账号？登录态和浏览器数据会被彻底清掉，删完要重新扫码才能再用。`)) return;
+    const id = a.platform.replace(/^xiaohongshu__/, '');
+    setRemoveBusy(a.platform);
+    try {
+      await removeXhsSubAccount(id);
+      setAccounts((list) => list.filter((x) => x.platform !== a.platform));
+      setWhoami((w) => { const n = { ...w }; delete n[a.platform]; return n; });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : '删除失败');
+    } finally {
+      setRemoveBusy('');
+    }
+  }, []);
+
   // 卡片真实登录态：whoami 权威（已返回则以它为准，自愈假阳性），否则用后端 last-known。
   // 公众号(wechat-oa)例外：后端查 mp 会话即真值(快且权威)，直接用它，避免浏览器里过期的 whoami 缓存把已登录盖成未登录。
   const effLoggedIn = (a: AccountItem): boolean => {
@@ -295,15 +332,29 @@ export default function AccountsPage() {
       )}
 
       <div className="accounts-grid">
-        {accounts.map((a) => {
+        {accounts.map((a, i) => {
           const w = whoami[a.platform];
           const info = w && w !== 'loading' ? w : null;
           const logged = effLoggedIn(a);
+          const isXhsFamily = a.platform === 'xiaohongshu' || a.platform.startsWith('xiaohongshu__');
+          const isLastXhsCard = isXhsFamily
+            && !(accounts[i + 1]?.platform === 'xiaohongshu' || accounts[i + 1]?.platform.startsWith('xiaohongshu__'));
           return (
+            <>
             <div key={a.platform} className="card account-card" style={{ opacity: a.supported ? 1 : 0.6 }}>
               <div className="account-card-head">
                 <span className="account-card-name">{a.name}</span>
-                {badge(a)}
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  {badge(a)}
+                  {a.isSubAccount && (
+                    <button className="icon-btn" title="删除这个账号"
+                      disabled={removeBusy === a.platform}
+                      onClick={() => handleRemoveSub(a)}
+                      style={{ fontSize: 13, lineHeight: 1, padding: '2px 6px' }}>
+                      {removeBusy === a.platform ? '…' : '×'}
+                    </button>
+                  )}
+                </span>
               </div>
 
               {logged && info && (
@@ -341,6 +392,39 @@ export default function AccountsPage() {
                 )}
               </div>
             </div>
+            {isLastXhsCard && (
+              addingSub ? (
+                <div key="xhs-add-form" className="card account-card">
+                  <div className="account-card-head">
+                    <span className="account-card-name">添加小红书账号</span>
+                  </div>
+                  <div className="account-card-note">起个能区分的名字，比如"火车票小红书""旅行小红书"，之后各扫各的码，互不覆盖。</div>
+                  <input value={subLabel} autoFocus
+                    onChange={(e) => setSubLabel(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleAddSub(); }}
+                    placeholder="账号名称" style={{ width: '100%', boxSizing: 'border-box', padding: '8px 10px',
+                      margin: '8px 0', border: '1px solid var(--border)', borderRadius: 8, fontSize: 14 }} />
+                  {subErr && <div style={{ color: 'var(--red)', fontSize: 12, marginBottom: 8 }}>{subErr}</div>}
+                  <div style={{ display: 'flex', gap: 8, marginTop: 'auto' }}>
+                    <button className="btn btn-primary btn-sm" style={{ flex: 1 }}
+                      disabled={subBusy} onClick={handleAddSub}>
+                      {subBusy ? '添加中…' : '添加'}
+                    </button>
+                    <button className="btn btn-sm btn-ghost" style={{ flex: 1 }}
+                      onClick={() => { setAddingSub(false); setSubLabel(''); setSubErr(''); }}>
+                      取消
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div key="xhs-add-btn" className="card account-card"
+                  style={{ alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'var(--text-secondary)' }}
+                  onClick={() => setAddingSub(true)}>
+                  <span style={{ fontSize: 14 }}>+ 添加小红书账号</span>
+                </div>
+              )
+            )}
+            </>
           );
         })}
       </div>

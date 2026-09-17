@@ -362,6 +362,7 @@ export interface AccountItem {
   supported: boolean;
   loggedIn: boolean;
   note: string;
+  isSubAccount?: boolean;   // 同平台的额外账号（目前仅小红书支持），登录态与主账号完全隔离
 }
 
 export interface LoginStart {
@@ -417,6 +418,20 @@ export interface LoginStatus {
 
 export function fetchAccounts(): Promise<AccountItem[]> {
   return request<AccountItem[]>('/api/accounts');
+}
+
+/** 新增一个小红书子账号（独立登录态，不覆盖已有账号）。 */
+export function addXhsSubAccount(label: string): Promise<{ ok: boolean; platform: string; id: string; label: string }> {
+  return request('/api/accounts/xiaohongshu/subaccounts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label }),
+  });
+}
+
+/** 删除一个小红书子账号：登录态和持久化浏览器 profile 一并清掉。 */
+export function removeXhsSubAccount(id: string): Promise<{ ok: boolean }> {
+  return request(`/api/accounts/xiaohongshu/subaccounts/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 export interface AccountWhoami {
