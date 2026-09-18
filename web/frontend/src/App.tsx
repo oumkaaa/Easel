@@ -292,12 +292,14 @@ export default function App() {
       (thinkChunk) => {
         const a = streamAcc.current[sessionId]; if (!a) return;
         a.thinking = (a.thinking + thinkChunk).slice(-4000);
-        setStreams((p) => (p[sessionId] ? { ...p, [sessionId]: { ...p[sessionId], thinking: a.thinking } } : p));
+        // 有真实思考流 → 清掉防呆提示（不再显示「未卡住」）
+        setStreams((p) => (p[sessionId] ? { ...p, [sessionId]: { ...p[sessionId], thinking: a.thinking, stillWorking: undefined } } : p));
       },
       (status) => {
         const a = streamAcc.current[sessionId]; if (!a) return;
         if (a.steps[a.steps.length - 1] !== status) a.steps.push(status);
-        setStreams((p) => (p[sessionId] ? { ...p, [sessionId]: { ...p[sessionId], activity: status } } : p));
+        // 有真实活动状态 → 清掉防呆提示，让真实状态占据活动行
+        setStreams((p) => (p[sessionId] ? { ...p, [sessionId]: { ...p[sessionId], activity: status, stillWorking: undefined } } : p));
       },
       // onInterrupted：SSE 被中断（长任务时代理掐断），但后端仍在跑并会落盘完整结果。
       // streamChat 会按 eventId 自动重连并补发遗漏事件；这里只更新用户可见状态。
@@ -326,6 +328,8 @@ export default function App() {
             ? { ...p, [sessionId]: { ...p[sessionId], questions: [...a2.questions] } } : p));
         });
       },
+      // onHeartbeat：防呆心跳（30s 静默）。只设独立的「未卡住」提示，绝不写 activity/thinking → 不顶掉真实状态。
+      (note) => setStreams((p) => (p[sessionId] ? { ...p, [sessionId]: { ...p[sessionId], stillWorking: note } } : p)),
     );
   }, [appendAssistant, clearStream]);
 
@@ -433,6 +437,8 @@ export default function App() {
             ? { ...p, [sessionId]: { ...p[sessionId], questions: [...a2.questions] } } : p));
         });
       },
+      // onHeartbeat：同上，独立的「未卡住」提示，不覆盖 activity/thinking。
+      (note) => setStreams((p) => (p[sessionId] ? { ...p, [sessionId]: { ...p[sessionId], stillWorking: note } } : p)),
     );
   }, [appendAssistant, clearStream]);
 

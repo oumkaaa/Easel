@@ -348,6 +348,16 @@ export async function uploadFiles(files: File[], sessionId: string): Promise<Upl
   return r.files;
 }
 
+/** 超限文件复制通道：返回与 uploadFiles 同构的附件引用。 */
+export interface AdoptedFile { id: string; name: string; path: string; }
+export async function adoptOversize(files: File[], sessionId: string): Promise<AdoptedFile[]> {
+  const fd = new FormData();
+  for (const f of files) fd.append('files', f);
+  fd.append('sessionId', sessionId);
+  const r = await request<{ ok: boolean; files: AdoptedFile[] }>('/api/upload/local', { method: 'POST', body: fd });
+  return r.files;
+}
+
 export function deleteSession(sessionKey: string): Promise<{ deleted: boolean }> {
   return request<{ deleted: boolean }>(`/api/session/${encodeURIComponent(sessionKey)}`, {
     method: 'DELETE',
@@ -565,6 +575,7 @@ export function streamChat(
   onRecoveryUnavailable?: () => void,
   attachments: UploadedFile[] = [],
   onQuestion?: (q: ChatQuestion) => void,
+  onHeartbeat?: (note: string) => void,
 ): AbortController {
   const controller = new AbortController();
   let lastEventId = 0;
@@ -601,6 +612,9 @@ export function streamChat(
           try { onActivity(JSON.parse(data) as string); } catch { onActivity(data); }
         } else if (currentEvent === 'question' && onQuestion) {
           try { onQuestion(JSON.parse(data) as ChatQuestion); } catch { /* 解析失败忽略 */ }
+        } else if (currentEvent === 'heartbeat') {
+          // 防呆心跳：独立于 activity/thinking，仅作「未卡住」提示，不覆盖真实状态。
+          if (onHeartbeat) { try { onHeartbeat(JSON.parse(data) as string); } catch { onHeartbeat(data); } }
         } else if (currentEvent === 'error') {
           let msg = '执行失败';
           try { msg = JSON.parse(data) as string; } catch { msg = data; }
